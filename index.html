@@ -225,6 +225,8 @@ a{color:var(--amber)}
       <input id="cfgToken" type="password" placeholder="up:yeah:...">
       <label>Your payday (any recent one — sets the fortnight cycle)</label>
       <input id="cfgAnchor" type="date">
+      <label>Expected pay per fortnight ($) — optional, overrides the auto average</label>
+      <input id="cfgPay" type="number" inputmode="decimal" step="0.01" placeholder="leave blank to use actual income">
       <div style="height:16px"></div>
       <button class="btn" onclick="saveCfg()">Save settings</button>
     </div>
@@ -479,10 +481,17 @@ function importCB(input){
   rd.onload=function(){
     var rows=parseCBA(String(rd.result));
     if(!rows.length){ toast('No transactions found in that file — is it the CSV export?'); input.value=''; return; }
-    var seen={}; cbtx.forEach(function(t){ seen[t.t+'|'+t.a+'|'+t.d]=1; });
-    var added=0;
+    // Count-based dedupe: CommBank rows have no IDs, and two identical
+    // transactions on the same day are legitimate (e.g. two $5 transfers).
+    var have={}; cbtx.forEach(function(t){ var k=t.t+'|'+t.a+'|'+t.d; have[k]=(have[k]||0)+1; });
+    var incoming={}, sample={};
     rows.forEach(function(r){ var k=r.t+'|'+r.a+'|'+r.d;
-      if(!seen[k]){ seen[k]=1; cbtx.push(r); added++; } });
+      incoming[k]=(incoming[k]||0)+1; sample[k]=r; });
+    var added=0;
+    Object.keys(incoming).forEach(function(k){
+      var need=incoming[k]-(have[k]||0);
+      for(var i=0;i<need;i++){ cbtx.push(sample[k]); added++; }
+    });
     save(LS.cb,cbtx); rebuildAll(); renderAll();
     toast('Imported '+added+' new CommBank transactions ('+(rows.length-added)+' already on board)');
     input.value='';
@@ -557,10 +566,15 @@ function renderHome(){
   var n=cyc6.length||1;
   var everyAvg=Math.round(cyc6.reduce(function(s,c){return s+c.everyday;},0)/n);
   var incAvg=Math.round(cyc6.reduce(function(s,c){return s+c.income;},0)/n);
+  var manualPay=cfg.pay>0;
+  if(manualPay) incAvg=cfg.pay;
   var left=incAvg-commit-everyAvg;
   document.getElementById('hCommit').textContent=money(commit);
   document.getElementById('hEveryday').textContent=money(everyAvg);
   document.getElementById('hIncome').textContent=money(incAvg);
+  document.querySelectorAll('#pg-home .li-name').forEach(function(e){
+    if(e.textContent.indexOf('Income')===0) e.textContent=manualPay?'Income (set by you)':'Income (avg)';
+  });
   var hl=document.getElementById('hLeft');
   hl.textContent=money(left); hl.className='li-amt '+(left>=0?'pos':'neg');
 
@@ -765,6 +779,7 @@ function renderSettings(){
   document.getElementById('cfgProxy').value=cfg.proxy;
   document.getElementById('cfgToken').value=cfg.token;
   document.getElementById('cfgAnchor').value=cfg.anchor;
+  document.getElementById('cfgPay').value=cfg.pay?(cfg.pay/100):'';
   document.getElementById('syncNote').textContent=lastSync?
     ('synced '+new Date(lastSync).toLocaleDateString('en-AU',{day:'numeric',month:'short'})):'not synced';
   document.getElementById('dataStats').textContent=(txns.length||cbtx.length)?
@@ -774,6 +789,7 @@ function saveCfg(){
   cfg.proxy=document.getElementById('cfgProxy').value.trim();
   cfg.token=document.getElementById('cfgToken').value.trim();
   cfg.anchor=document.getElementById('cfgAnchor').value;
+  cfg.pay=Math.round((parseFloat(document.getElementById('cfgPay').value)||0)*100);
   save(LS.cfg,cfg); toast('Settings saved'); renderAll();
 }
 function wipeAll(){
