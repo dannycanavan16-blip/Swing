@@ -237,6 +237,10 @@ a{color:var(--amber)}
       <div style="height:10px"></div>
       <button class="btn ghost" onclick="document.getElementById('cbFile').click()">Import CommBank CSV</button>
       <input type="file" id="cbFile" accept=".csv,text/csv" style="display:none" onchange="importCB(this)">
+      <div style="height:10px"></div>
+      <button class="btn danger" onclick="clearCB()">Remove CommBank data</button>
+      <div style="height:10px"></div>
+      <button class="btn ghost" onclick="exportCSV()">Export all transactions (CSV)</button>
       <div class="hint" id="dataStats"></div>
     </div>
     <div class="card">
@@ -301,7 +305,7 @@ a{color:var(--amber)}
 /* ============================== state ============================== */
 var LS = {
   cfg:'ub_cfg', txns:'ub_txns', accts:'ub_accts', bills:'ub_bills',
-  dismissed:'ub_dismissed', goals:'ub_goals', last:'ub_last', cb:'ub_cb'
+  dismissed:'ub_dismissed', goals:'ub_goals', last:'ub_last', cb:'ub_cb', ovr:'ub_ovr'
 };
 function load(k,d){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
 function save(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }
@@ -315,8 +319,41 @@ var dismissed = load(LS.dismissed,[]); // detected keys the user dismissed
 var goals = load(LS.goals,[]);     // {id,name,target(cents),saverId,current(cents)}
 var lastSync = load(LS.last,null);
 var cbtx = load(LS.cb,[]);         // CommBank CSV imports {t,d,a,c:null,ac:'cba',x:false,b:1}
+var ovr = load(LS.ovr,{});          // manual include/exclude, key -> 'x'|'n'
 var ALL = [];                       // merged Up + CommBank, newest first
-function rebuildAll(){ ALL = txns.concat(cbtx); ALL.sort(function(a,b){ return a.t<b.t?1:-1; }); }
+function txKey(t){ return t.id ? t.id : ('cb|'+t.t+'|'+t.a+'|'+t.d); }
+function rebuildAll(){
+  // auto-flag CommBank self-transfers and direct-debit reversals by description
+  var pat=/^(transfer (to|from)|fast transfer|netbank transfer|commbank app transfer|return\b)/i;
+  cbtx.forEach(function(t){ t.x = pat.test(t.d); delete t._rm; });
+  // bounced direct debits: the money left and came straight back, so the
+  // "Return" credit cancels the failed debit — exclude both
+  cbtx.forEach(function(r){
+    if(!(r.a>0 && /^return\b/i.test(r.d))) return;
+    for(var i=0;i<cbtx.length;i++){ var d=cbtx[i];
+      if(d._rm||d.a!==-r.a||d.x) continue;
+      var gap=(new Date(r.t+'T12:00:00')-new Date(d.t+'T12:00:00'))/864e5;
+      if(gap>=0&&gap<=5){ d.x=true; d._rm=1; break; }
+    }
+  });
+  txns.forEach(function(t){ if(t._px){ t.x=false; } delete t._px; delete t._m; });
+  // cross-bank pairs: +$X in one bank and -$X in the other within 3 days = moving your own money
+  var upByAmt={};
+  txns.forEach(function(u){ (upByAmt[u.a]=upByAmt[u.a]||[]).push(u); });
+  cbtx.forEach(function(c){ if(c.x) return;
+    var cands=upByAmt[-c.a]||[];
+    for(var i=0;i<cands.length;i++){ var u=cands[i];
+      if(u.x||u._m) continue;
+      var dd=Math.abs(new Date(c.t+'T12:00:00')-new Date(u.t+'T12:00:00'))/864e5;
+      if(dd<=3){ c.x=true; u.x=true; u._px=1; u._m=1; break; }
+    }
+  });
+  // your manual taps always win
+  var apply=function(t){ var o=ovr[txKey(t)]; if(o==='x')t.x=true; else if(o==='n')t.x=false; };
+  txns.forEach(apply); cbtx.forEach(apply);
+  ALL = txns.concat(cbtx);
+  ALL.sort(function(a,b){ return a.t<b.t?1:-1; });
+}
 rebuildAll();
 var txFilter='all', txShown=60;
 
@@ -702,13 +739,16 @@ function renderActivity(){
   var host=document.getElementById('txList');
   host.innerHTML=list.length?'':'<div class="empty">'+(ALL.length?'No matches.':'No transactions yet — head to Setup and sync.')+'</div>';
   var lastDay='';
-  list.slice(0,txShown).forEach(function(t){
+  window._act=list;
+  list.slice(0,txShown).forEach(function(t,i){
     if(t.t!==lastDay){ lastDay=t.t;
       host.insertAdjacentHTML('beforeend','<div class="day-hd">'+fmtDay(t.t)+'</div>'); }
     var cls=t.x?'':(t.a>0?'pos':'');
+    var sub=(t.b?'CommBank · ':'')+(t.x?'Not counted — tap to include':esc(titleCase(t.c)));
     host.insertAdjacentHTML('beforeend',
-      '<div class="list-item"><div class="li-main"><div class="li-name">'+esc(t.d)+'</div>'+
-      '<div class="li-sub">'+(t.b?'CommBank':(t.x?'Transfer':esc(titleCase(t.c))))+'</div></div>'+
+      '<div class="list-item" onclick="toggleTx('+i+')" style="'+(t.x?'opacity:.55':'')+'">'+
+      '<div class="li-main"><div class="li-name">'+esc(t.d)+'</div>'+
+      '<div class="li-sub">'+sub+'</div></div>'+
       '<div class="li-amt '+cls+'">'+money(t.a,t.a>0)+'</div></div>');
   });
   document.getElementById('txMore').style.display=list.length>txShown?'block':'none';
@@ -772,6 +812,44 @@ function renderGoals(){
       (g.saverId?' · auto from Up Saver':'')+'</div>'+
       '<div class="sub">'+money(Math.max(0,g.target-cur))+' to go</div></div></div>');
   });
+}
+
+function toggleTx(i){ var t=window._act[i]; if(!t) return;
+  var wasExcluded=t.x;
+  ovr[txKey(t)]=wasExcluded?'n':'x';
+  save(LS.ovr,ovr); rebuildAll(); renderAll();
+  toast(wasExcluded?'Counted in your numbers again':'Excluded — treated as a transfer');
+}
+function clearCB(){
+  if(!confirm('Remove all imported CommBank transactions? Your Up data, bills and goals stay.')) return;
+  cbtx=[]; save(LS.cb,cbtx); rebuildAll(); renderAll(); toast('CommBank data removed');
+}
+
+/* ---- CSV export ---- */
+function csvField(v){ v=String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+function buildCSV(list){
+  var acctName={}; accts.forEach(function(a){acctName[a.id]=a.name;});
+  var lines=['Date,Amount,Description,Category,Counted,Source'];
+  list.forEach(function(t){
+    lines.push([t.t,(t.a/100).toFixed(2),csvField(t.d),
+      csvField(t.b?'':titleCase(t.c)),
+      t.x?'no (transfer/excluded)':'yes',
+      csvField(t.b?'CommBank':(acctName[t.ac]||'Up'))].join(','));
+  });
+  return lines.join('\n');
+}
+function exportCSV(){
+  if(!ALL.length){ toast('Nothing to export yet'); return; }
+  var csv=buildCSV(ALL);
+  var file=new File([csv],'swing-transactions.csv',{type:'text/csv'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    navigator.share({files:[file],title:'SWING transactions'}).catch(function(){});
+  } else {
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download='swing-transactions.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
 }
 
 /* ---- settings ---- */
