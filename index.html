@@ -232,6 +232,9 @@ a{color:var(--amber)}
       <button class="btn" id="syncBtn" onclick="syncNow(false)">Sync with Up</button>
       <div style="height:10px"></div>
       <button class="btn ghost" onclick="syncNow(true)">Full re-sync (all history)</button>
+      <div style="height:10px"></div>
+      <button class="btn ghost" onclick="document.getElementById('cbFile').click()">Import CommBank CSV</button>
+      <input type="file" id="cbFile" accept=".csv,text/csv" style="display:none" onchange="importCB(this)">
       <div class="hint" id="dataStats"></div>
     </div>
     <div class="card">
@@ -296,7 +299,7 @@ a{color:var(--amber)}
 /* ============================== state ============================== */
 var LS = {
   cfg:'ub_cfg', txns:'ub_txns', accts:'ub_accts', bills:'ub_bills',
-  dismissed:'ub_dismissed', goals:'ub_goals', last:'ub_last'
+  dismissed:'ub_dismissed', goals:'ub_goals', last:'ub_last', cb:'ub_cb'
 };
 function load(k,d){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
 function save(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }
@@ -309,6 +312,10 @@ var bills = load(LS.bills,[]);     // {id,name,amt(cents),freq,note,src:'manual'
 var dismissed = load(LS.dismissed,[]); // detected keys the user dismissed
 var goals = load(LS.goals,[]);     // {id,name,target(cents),saverId,current(cents)}
 var lastSync = load(LS.last,null);
+var cbtx = load(LS.cb,[]);         // CommBank CSV imports {t,d,a,c:null,ac:'cba',x:false,b:1}
+var ALL = [];                       // merged Up + CommBank, newest first
+function rebuildAll(){ ALL = txns.concat(cbtx); ALL.sort(function(a,b){ return a.t<b.t?1:-1; }); }
+rebuildAll();
 var txFilter='all', txShown=60;
 
 /* ============================== utils ============================== */
@@ -422,7 +429,7 @@ function syncNow(full){
     if(full) txns=newTx;
     else txns=newTx.filter(function(t){return !existing[t.id];}).concat(txns);
     txns.sort(function(a,b){ return a.t<b.t?1:-1; });
-    save(LS.txns,txns);
+    save(LS.txns,txns); rebuildAll();
     lastSync=new Date().toISOString(); save(LS.last,lastSync);
     ov.classList.remove('on');
     toast('Synced — '+txns.length.toLocaleString()+' transactions on board');
@@ -443,6 +450,46 @@ function syncNow(full){
   }
 }
 
+/* ============================== CommBank CSV import ============================== */
+function csvLine(line){
+  var out=[],cur='',q=false;
+  for(var i=0;i<line.length;i++){ var ch=line[i];
+    if(q){ if(ch==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=ch; }
+    else { if(ch==='"')q=true; else if(ch===','){out.push(cur);cur='';} else cur+=ch; } }
+  out.push(cur); return out;
+}
+function parseCBA(text){
+  var rows=text.split(/\r?\n/), out=[];
+  rows.forEach(function(line){
+    if(!line.trim()) return;
+    var f=csvLine(line);
+    var m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec((f[0]||'').trim());
+    if(!m) return; // header or junk row
+    var t=m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+    var amt=parseFloat(String(f[1]||'').replace(/[+$,\s]/g,''));
+    if(isNaN(amt)) return;
+    var d=String(f[2]||'').replace(/\s{2,}/g,' ').trim()||'CommBank transaction';
+    out.push({ t:t, d:d, a:Math.round(amt*100), c:null, ac:'cba', x:false, b:1 });
+  });
+  return out;
+}
+function importCB(input){
+  var file=input.files&&input.files[0]; if(!file) return;
+  var rd=new FileReader();
+  rd.onload=function(){
+    var rows=parseCBA(String(rd.result));
+    if(!rows.length){ toast('No transactions found in that file — is it the CSV export?'); input.value=''; return; }
+    var seen={}; cbtx.forEach(function(t){ seen[t.t+'|'+t.a+'|'+t.d]=1; });
+    var added=0;
+    rows.forEach(function(r){ var k=r.t+'|'+r.a+'|'+r.d;
+      if(!seen[k]){ seen[k]=1; cbtx.push(r); added++; } });
+    save(LS.cb,cbtx); rebuildAll(); renderAll();
+    toast('Imported '+added+' new CommBank transactions ('+(rows.length-added)+' already on board)');
+    input.value='';
+  };
+  rd.readAsText(file);
+}
+
 /* ============================== derived data ============================== */
 function spendTx(t){ return t.a<0 && !t.x; }
 function incomeTx(t){ return t.a>0 && !t.x; }
@@ -455,14 +502,14 @@ function isBillTx(t,keys){ return spendTx(t) && keys[normDesc(t.d)]; }
 
 function cycleTotals(nCycles){
   // returns array oldest→newest of {start, spend, income, everyday}
-  if(!cfg.anchor||!txns.length) return [];
+  if(!cfg.anchor||!ALL.length) return [];
   var keys=billKeys(), today=dstr(new Date());
   var cur=cycleIndex(today,cfg.anchor), out=[];
   for(var i=cur-nCycles+1;i<=cur;i++){
     out.push({idx:i,start:cycleStart(i,cfg.anchor),spend:0,income:0,everyday:0});
   }
   var byIdx={}; out.forEach(function(c){byIdx[c.idx]=c;});
-  txns.forEach(function(t){
+  ALL.forEach(function(t){
     var ci=cycleIndex(t.t,cfg.anchor), c=byIdx[ci]; if(!c) return;
     if(spendTx(t)){ c.spend+=-t.a; if(!keys[normDesc(t.d)]) c.everyday+=-t.a; }
     else if(incomeTx(t)){ c.income+=t.a; }
@@ -521,7 +568,7 @@ function renderHome(){
 
   // top categories this calendar month
   var mon=dstr(new Date()).slice(0,7), cats={};
-  txns.forEach(function(t){ if(spendTx(t)&&t.t.slice(0,7)===mon){
+  ALL.forEach(function(t){ if(spendTx(t)&&t.t.slice(0,7)===mon){
     var k=t.c||'uncategorised'; cats[k]=(cats[k]||0)+(-t.a); } });
   var rows=Object.keys(cats).map(function(k){return{k:k,v:cats[k]};})
     .sort(function(a,b){return b.v-a.v;}).slice(0,6);
@@ -573,11 +620,11 @@ function renderBills(){
       '<div class="li-amt">'+money(b.amt)+'<small>'+money(perFortnight(b.amt,b.freq))+' / fn</small></div></div>');
   });
 
-  var det=detectRecurring(txns), keys=billKeys(), dset={};
+  var det=detectRecurring(ALL), keys=billKeys(), dset={};
   dismissed.forEach(function(k){dset[k]=1;});
   det=det.filter(function(d){ return !keys[d.key] && !dset[d.key]; });
   var dh=document.getElementById('detectedList');
-  dh.innerHTML=det.length?'':'<div class="empty">'+(txns.length?'Nothing new detected — all your regulars are confirmed or dismissed.':'Sync to detect recurring payments.')+'</div>';
+  dh.innerHTML=det.length?'':'<div class="empty">'+(ALL.length?'Nothing new detected — all your regulars are confirmed or dismissed.':'Sync to detect recurring payments.')+'</div>';
   det.slice(0,15).forEach(function(d,i){
     dh.insertAdjacentHTML('beforeend',
       '<div class="list-item"><div class="li-main"><div class="li-name">'+esc(d.name)+'</div>'+
@@ -631,7 +678,7 @@ function setTxFilter(el){
 }
 function renderActivity(){
   var q=document.getElementById('txSearch').value.toLowerCase();
-  var list=txns.filter(function(t){
+  var list=ALL.filter(function(t){
     if(txFilter==='spend'&&!spendTx(t))return false;
     if(txFilter==='income'&&!incomeTx(t))return false;
     if(txFilter==='transfer'&&!t.x)return false;
@@ -639,7 +686,7 @@ function renderActivity(){
     return true;
   });
   var host=document.getElementById('txList');
-  host.innerHTML=list.length?'':'<div class="empty">'+(txns.length?'No matches.':'No transactions yet — head to Setup and sync.')+'</div>';
+  host.innerHTML=list.length?'':'<div class="empty">'+(ALL.length?'No matches.':'No transactions yet — head to Setup and sync.')+'</div>';
   var lastDay='';
   list.slice(0,txShown).forEach(function(t){
     if(t.t!==lastDay){ lastDay=t.t;
@@ -647,7 +694,7 @@ function renderActivity(){
     var cls=t.x?'':(t.a>0?'pos':'');
     host.insertAdjacentHTML('beforeend',
       '<div class="list-item"><div class="li-main"><div class="li-name">'+esc(t.d)+'</div>'+
-      '<div class="li-sub">'+(t.x?'Transfer':esc(titleCase(t.c)))+'</div></div>'+
+      '<div class="li-sub">'+(t.b?'CommBank':(t.x?'Transfer':esc(titleCase(t.c))))+'</div></div>'+
       '<div class="li-amt '+cls+'">'+money(t.a,t.a>0)+'</div></div>');
   });
   document.getElementById('txMore').style.display=list.length>txShown?'block':'none';
@@ -720,9 +767,8 @@ function renderSettings(){
   document.getElementById('cfgAnchor').value=cfg.anchor;
   document.getElementById('syncNote').textContent=lastSync?
     ('synced '+new Date(lastSync).toLocaleDateString('en-AU',{day:'numeric',month:'short'})):'not synced';
-  document.getElementById('dataStats').textContent=txns.length?
-    (txns.length.toLocaleString()+' transactions stored, '+
-     (txns.length?('oldest '+fmtDay(txns[txns.length-1].t)):'')):'No data stored yet.';
+  document.getElementById('dataStats').textContent=(txns.length||cbtx.length)?
+    (txns.length.toLocaleString()+' Up + '+cbtx.length.toLocaleString()+' CommBank transactions stored'):'No data stored yet.';
 }
 function saveCfg(){
   cfg.proxy=document.getElementById('cfgProxy').value.trim();
