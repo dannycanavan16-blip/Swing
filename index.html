@@ -297,6 +297,14 @@ a{color:var(--amber)}
     <option value="w">Weekly</option><option value="f" selected>Fortnightly</option>
     <option value="m">Monthly</option><option value="q">Quarterly</option><option value="y">Yearly</option>
   </select>
+  <label>Part of it belongs elsewhere? Amount ($) — optional</label>
+  <input id="bSplitAmt" type="number" inputmode="decimal" step="0.01" placeholder="e.g. 50 of the 700">
+  <label>That part's type</label>
+  <select id="bSplitCat">
+    <option value="debt">Debt repayment</option><option value="sub">Subscription</option>
+    <option value="ins" selected>Insurance</option><option value="util">Utilities & phone</option>
+    <option value="living">Living & family</option><option value="other">Other</option>
+  </select>
   <label>Note (optional)</label><input id="bNote" placeholder="e.g. comes out of CommBank">
   <input type="hidden" id="bEditId">
   <div style="height:18px"></div>
@@ -815,10 +823,19 @@ function renderBills(){
   var host=document.getElementById('billList');
   host.innerHTML=bills.length?'':'<div class="empty">Nothing yet. Sync your Up data and I\'ll detect recurring payments, or add bills manually.</div>';
   var CATN={debt:'Debt repayments',sub:'Subscriptions',ins:'Insurance',util:'Utilities & phone',living:'Living & family',other:'Other'};
+  var catFn={};
+  bills.forEach(function(b){
+    var main=(b.cat||'other'), full=perFortnight(b.amt,b.freq);
+    if(b.split&&b.split.amt<b.amt){
+      var sp=perFortnight(b.split.amt,b.freq);
+      catFn[main]=(catFn[main]||0)+full-sp;
+      catFn[b.split.cat]=(catFn[b.split.cat]||0)+sp;
+    } else catFn[main]=(catFn[main]||0)+full;
+  });
   ['debt','sub','ins','util','living','other'].forEach(function(cat){
     var grp=bills.filter(function(b){return (b.cat||'other')===cat;});
-    if(!grp.length) return;
-    var sub=grp.reduce(function(s,b){return s+perFortnight(b.amt,b.freq);},0);
+    if(!grp.length&&!catFn[cat]) return;
+    var sub=catFn[cat]||0;
     host.insertAdjacentHTML('beforeend',
       '<div class="row" style="margin-top:14px"><div class="day-hd" style="margin:0">'+CATN[cat]+
       '</div><div class="sub">'+money(sub)+' / fn</div></div>');
@@ -827,7 +844,9 @@ function renderBills(){
       host.insertAdjacentHTML('beforeend',
         '<div class="list-item" onclick="openBillSheet(\''+b.id+'\')">'+
         '<div class="li-main"><div class="li-name">'+esc(b.name)+'</div>'+
-        '<div class="li-sub">'+FREQ[b.freq].n+(b.note?' · '+esc(b.note):'')+
+        '<div class="li-sub">'+FREQ[b.freq].n+
+        (b.split?' · incl. '+money(perFortnight(b.split.amt,b.freq))+'/fn '+CATN[b.split.cat]:'')+
+        (b.note?' · '+esc(b.note):'')+
         (b.src==='detected'?' · from Up history':'')+'</div></div>'+
         '<div class="li-amt">'+money(b.amt)+'<small>'+money(perFortnight(b.amt,b.freq))+' / fn</small></div></div>');
     });
@@ -1012,6 +1031,8 @@ function openBillSheet(id){
   document.getElementById('bAmt').value=b?(b.amt/100):'';
   document.getElementById('bFreq').value=b?b.freq:'f';
   document.getElementById('bCat').value=b?(b.cat||'other'):'other';
+  document.getElementById('bSplitAmt').value=(b&&b.split)?(b.split.amt/100):'';
+  document.getElementById('bSplitCat').value=(b&&b.split)?b.split.cat:'ins';
   document.getElementById('bNote').value=b?b.note:'';
   document.getElementById('bEditId').value=b?b.id:'';
   document.getElementById('bDelete').style.display=b?'block':'none';
@@ -1025,6 +1046,8 @@ function saveBill(){
   var rec={ name:name, amt:amt, freq:document.getElementById('bFreq').value,
     cat:document.getElementById('bCat').value,
     note:document.getElementById('bNote').value.trim() };
+  var sAmt=Math.round((parseFloat(document.getElementById('bSplitAmt').value)||0)*100);
+  rec.split=(sAmt>0&&sAmt<amt)?{amt:sAmt,cat:document.getElementById('bSplitCat').value}:null;
   if(id){ var b=bills.find(function(x){return x.id===id;}); Object.assign(b,rec); }
   else { rec.id=uid(); rec.src='manual'; bills.push(rec); }
   save(LS.bills,bills); closeModal('billModal'); renderAll();
