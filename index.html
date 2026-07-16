@@ -448,11 +448,12 @@ function normDesc(d){
 }
 function median(a){ if(!a.length)return 0; var s=a.slice().sort(function(x,y){return x-y;});
   var m=Math.floor(s.length/2); return s.length%2?s[m]:Math.round((s[m-1]+s[m])/2); }
-function detectRecurring(list){
-  // list: spending txns {t:'YYYY-MM-DD', d:desc, a:cents(neg)}
+function detectRecurring(list, income){
+  // spending streams by default; pass income=true for regular pays
   var groups={};
   list.forEach(function(t){
-    if(t.a>=0||t.x) return;
+    if(t.x) return;
+    if(income ? t.a<=0 : t.a>=0) return;
     var k=normDesc(t.d); if(!k) return;
     (groups[k]=groups[k]||[]).push(t);
   });
@@ -470,7 +471,7 @@ function detectRecurring(list){
     if(!freq) return;
     var lastGap=(today-new Date(g[g.length-1].t))/864e5;
     if(lastGap > md*2.2+4) return;                    // gone quiet — not active
-    var amts=g.slice(-6).map(function(t){return -t.a;});
+    var amts=g.slice(-6).map(function(t){return Math.abs(t.a);});
     var amt=median(amts);
     var spread=Math.max.apply(null,amts)-Math.min.apply(null,amts);
     out.push({ key:k, name:g[g.length-1].d, freq:freq, amt:amt,
@@ -702,14 +703,17 @@ function renderHome(){
   var n=cyc6.length||1;
   var everyAvg=Math.round(cyc6.reduce(function(s,c){return s+c.everyday;},0)/n);
   var incAvg=Math.round(cyc6.reduce(function(s,c){return s+c.income;},0)/n);
-  var manualPay=cfg.pay>0;
-  if(manualPay) incAvg=cfg.pay;
+  var incLabel='Income (avg)';
+  var regStreams=detectRecurring(ALL,true);
+  var regInc=regStreams.reduce(function(s,d){return s+perFortnight(d.amt,d.freq);},0);
+  if(regInc>0){ incAvg=regInc; incLabel='Income (regular pays)'; }
+  if(cfg.pay>0){ incAvg=cfg.pay; incLabel='Income (set by you)'; }
   var left=incAvg-commit-everyAvg;
   document.getElementById('hCommit').textContent=money(commit);
   document.getElementById('hEveryday').textContent=money(everyAvg);
   document.getElementById('hIncome').textContent=money(incAvg);
   document.querySelectorAll('#pg-home .li-name').forEach(function(e){
-    if(e.textContent.indexOf('Income')===0) e.textContent=manualPay?'Income (set by you)':'Income (avg)';
+    if(e.textContent.indexOf('Income')===0) e.textContent=incLabel;
   });
   var hl=document.getElementById('hLeft');
   hl.textContent=money(left); hl.className='li-amt '+(left>=0?'pos':'neg');
