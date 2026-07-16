@@ -178,6 +178,7 @@ a{color:var(--amber)}
         <div class="eyebrow">Debts — left to pay off</div>
         <div class="eyebrow" id="debtTotal"></div>
       </div>
+      <div class="sub" id="debtSummary"></div>
       <div id="debtList"><div class="empty">Nothing tracked yet.</div></div>
       <div style="height:8px"></div>
       <button class="btn ghost sm" onclick="openDebtSheet()">+ Track a debt</button>
@@ -870,7 +871,7 @@ function debtRemaining(d){ return debtCalc(d).rem; }
 function renderDebts(){
   var host=document.getElementById('debtList'); if(!host) return;
   host.innerHTML=debts.length?'':'<div class="empty">Nothing tracked yet.</div>';
-  var tot=0;
+  var tot=0, totPaid=0;
   debts.forEach(function(d){
     var calc=debtCalc(d), rem=calc.rem;
     tot+=rem;
@@ -878,17 +879,19 @@ function renderDebts(){
     if(peak!==d.peak){ d.peak=peak; save(LS.debts,debts); }
     var paid=peak-rem, pc=peak?Math.round(paid/peak*100):100;
     var fnCost=Math.round(rem*(d.rate||0)/100/365*14);
-    var sub2=d.rate? money(fnCost)+'/fn in interest at '+d.rate+'%'
-                   : money(paid)+' paid down since '+fmtDay(d.entry);
+    var sub2=d.rate&&rem? money(fnCost)+'/fn interest at '+d.rate+'%' : 'since '+fmtDay(d.entry);
     host.insertAdjacentHTML('beforeend',
       '<div style="margin-top:14px" onclick="openDebtSheet(\''+d.id+'\')">'+
       '<div class="row"><div class="li-name">'+esc(d.name)+'</div>'+
       '<div class="li-amt '+(rem?'':'pos')+'">'+(rem?money(rem)+' left':'PAID OFF')+'</div></div>'+
       '<div class="bar" style="height:10px"><b style="width:'+pc+'%" class="'+(rem?'warn':'')+'"></b></div>'+
-      '<div class="row" style="margin-top:4px"><div class="sub">'+pc+'% cleared</div>'+
+      '<div class="row" style="margin-top:4px"><div class="sub">'+pc+'% cleared · '+money(paid)+' paid off</div>'+
       '<div class="sub">'+sub2+'</div></div></div>');
+    totPaid+=paid;
   });
   document.getElementById('debtTotal').textContent=debts.length?money(tot)+' owing':'';
+  var ds=document.getElementById('debtSummary');
+  if(ds) ds.textContent=debts.length?('Paid off so far: '+money(totPaid)):'';
 }
 function openDebtSheet(id){
   var d=id?debts.find(function(x){return x.id===id;}):null;
