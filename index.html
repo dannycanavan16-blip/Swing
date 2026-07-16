@@ -329,6 +329,14 @@ a{color:var(--amber)}
   <label>Match transactions containing</label><input id="dMatch" placeholder="e.g. credit corp">
   <label>Interest rate (% per year) — leave blank if none</label>
   <input id="dRate" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 47">
+  <div class="day-hd" style="margin-top:18px">Or set up as a loan with a schedule</div>
+  <div class="sub">Fill these in for car loans etc. — the app works out where you're up to from the start date. Leave blank for balance-based tracking above.</div>
+  <label>Original loan amount ($)</label><input id="dOrig" type="number" inputmode="decimal" step="0.01" placeholder="55000">
+  <label>First payment date</label><input id="dStart" type="date">
+  <label>Repayment amount ($)</label><input id="dPay" type="number" inputmode="decimal" step="0.01" placeholder="650">
+  <label>Repayment frequency</label>
+  <select id="dPayFreq"><option value="w">Weekly</option><option value="f" selected>Fortnightly</option><option value="m">Monthly</option></select>
+  <label>Total number of payments</label><input id="dN" type="number" inputmode="numeric" placeholder="94">
   <input type="hidden" id="dEditId">
   <div style="height:18px"></div>
   <button class="btn" onclick="saveDebt()">Save debt</button>
@@ -846,7 +854,21 @@ function dismissDetected(i){ var d=window._det[i]; if(!d)return;
   dismissed.push(d.key); save(LS.dismissed,dismissed); renderBills(); }
 
 /* ---- debts ---- */
+var PFREQ={w:{days:7,py:52},f:{days:14,py:26},m:{days:30.44,py:12}};
+function loanCalc(d){
+  var f=PFREQ[d.pfreq||'f'];
+  var made=Math.floor((new Date(dstr(new Date())+'T12:00:00')-new Date(d.start+'T12:00:00'))/864e5/f.days)+1;
+  made=Math.max(0,Math.min(d.n,made));
+  var i=(d.rate||0)/100/f.py, g=Math.pow(1+i,made);
+  var payout=i? Math.round(d.orig*g - d.pay*(g-1)/i) : Math.round(d.orig-d.pay*made);
+  if(made>=d.n) payout=0;
+  payout=Math.max(0,payout);
+  var end=new Date(d.start+'T12:00:00'); end.setDate(end.getDate()+Math.round((d.n-1)*f.days));
+  return { made:made, n:d.n, paid:made*d.pay, total:d.n*d.pay,
+    rem:Math.max(0,d.n*d.pay-made*d.pay), payout:payout, end:dstr(end) };
+}
 function debtCalc(d){
+  if(d.mode==='loan'){ var l=loanCalc(d); return {rem:l.rem, interest:0, loan:l}; }
   var m=d.match.toLowerCase(), rem=d.bal0, interest=0;
   var daily=(d.rate||0)/100/365;
   var cur=d.entry;
@@ -873,11 +895,24 @@ function renderDebts(){
   host.innerHTML=debts.length?'':'<div class="empty">Nothing tracked yet.</div>';
   var tot=0, totPaid=0;
   debts.forEach(function(d){
-    var calc=debtCalc(d), rem=calc.rem;
+    var calc=debtCalc(d), rem=calc.rem, paid, pc;
     tot+=rem;
+    if(calc.loan){
+      var l=calc.loan;
+      paid=l.paid; pc=l.total?Math.round(l.paid/l.total*100):100;
+      host.insertAdjacentHTML('beforeend',
+        '<div style="margin-top:14px" onclick="openDebtSheet(\''+d.id+'\')">'+
+        '<div class="row"><div class="li-name">'+esc(d.name)+'</div>'+
+        '<div class="li-amt '+(rem?'':'pos')+'">'+(rem?money(rem)+' left':'PAID OFF')+'</div></div>'+
+        '<div class="bar" style="height:10px"><b style="width:'+pc+'%" class="'+(rem?'warn':'')+'"></b></div>'+
+        '<div class="row" style="margin-top:4px"><div class="sub">'+l.made+' of '+l.n+' payments · '+money(l.paid)+' paid off</div>'+
+        '<div class="sub">payout ~'+money(l.payout)+' · ends '+fmtDay(l.end)+'</div></div></div>');
+      totPaid+=paid;
+      return;
+    }
     var peak=Math.max(d.peak||0,d.bal0,rem);
     if(peak!==d.peak){ d.peak=peak; save(LS.debts,debts); }
-    var paid=peak-rem, pc=peak?Math.round(paid/peak*100):100;
+    paid=peak-rem; pc=peak?Math.round(paid/peak*100):100;
     var fnCost=Math.round(rem*(d.rate||0)/100/365*14);
     var sub2=d.rate&&rem? money(fnCost)+'/fn interest at '+d.rate+'%' : 'since '+fmtDay(d.entry);
     host.insertAdjacentHTML('beforeend',
@@ -900,6 +935,11 @@ function openDebtSheet(id){
   document.getElementById('dBal').value=d?(debtRemaining(d)/100).toFixed(2):'';
   document.getElementById('dMatch').value=d?d.match:'';
   document.getElementById('dRate').value=d&&d.rate?d.rate:'';
+  document.getElementById('dOrig').value=d&&d.orig?(d.orig/100):'';
+  document.getElementById('dStart').value=d&&d.start?d.start:'';
+  document.getElementById('dPay').value=d&&d.pay?(d.pay/100):'';
+  document.getElementById('dPayFreq').value=d&&d.pfreq?d.pfreq:'f';
+  document.getElementById('dN').value=d&&d.n?d.n:'';
   document.getElementById('dEditId').value=d?d.id:'';
   document.getElementById('dDelete').style.display=d?'block':'none';
   document.getElementById('debtModal').classList.add('on');
@@ -908,7 +948,22 @@ function saveDebt(){
   var name=document.getElementById('dName').value.trim();
   var bal=Math.round(parseFloat(document.getElementById('dBal').value)*100);
   var match=document.getElementById('dMatch').value.trim()||name;
-  if(!name||isNaN(bal)||bal<0){ toast('Give it a name and today\'s balance'); return; }
+  var orig=Math.round((parseFloat(document.getElementById('dOrig').value)||0)*100);
+  var start=document.getElementById('dStart').value;
+  var pay=Math.round((parseFloat(document.getElementById('dPay').value)||0)*100);
+  var nPay=parseInt(document.getElementById('dN').value)||0;
+  var isLoan=orig>0&&start&&pay>0&&nPay>0;
+  if(!name){ toast('Give it a name'); return; }
+  if(!isLoan&&(isNaN(bal)||bal<0)){ toast('Enter today\'s balance, or fill in the loan schedule'); return; }
+  if(isLoan){
+    var rate=parseFloat(document.getElementById('dRate').value)||0;
+    var id0=document.getElementById('dEditId').value;
+    var rec={name:name,mode:'loan',orig:orig,start:start,pay:pay,
+      pfreq:document.getElementById('dPayFreq').value,n:nPay,rate:rate,match:match};
+    if(id0){ var d0=debts.find(function(x){return x.id===id0;}); Object.assign(d0,rec); }
+    else { rec.id=uid(); debts.push(rec); }
+    save(LS.debts,debts); closeModal('debtModal'); renderBills(); return;
+  }
   var id=document.getElementById('dEditId').value;
   var today=dstr(new Date());
   var rate=parseFloat(document.getElementById('dRate').value)||0;
