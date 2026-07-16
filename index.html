@@ -173,6 +173,15 @@ a{color:var(--amber)}
 
   <!-- ============ BILLS ============ -->
   <div class="page" id="pg-bills">
+    <div class="card" id="debtCard">
+      <div class="row">
+        <div class="eyebrow">Debts — left to pay off</div>
+        <div class="eyebrow" id="debtTotal"></div>
+      </div>
+      <div id="debtList"><div class="empty">Nothing tracked yet.</div></div>
+      <div style="height:8px"></div>
+      <button class="btn ghost sm" onclick="openDebtSheet()">+ Track a debt</button>
+    </div>
     <div class="card">
       <div class="row">
         <div>
@@ -273,6 +282,15 @@ a{color:var(--amber)}
   <div class="sub">For anything Up can't see — like bills from another bank — or new bills starting soon.</div>
   <label>Name</label><input id="bName" placeholder="e.g. Car insurance">
   <label>Amount ($)</label><input id="bAmt" type="number" inputmode="decimal" step="0.01" placeholder="165.00">
+  <label>Type</label>
+  <select id="bCat">
+    <option value="debt">Debt repayment</option>
+    <option value="sub">Subscription</option>
+    <option value="ins">Insurance</option>
+    <option value="util">Utilities & phone</option>
+    <option value="living">Living & family</option>
+    <option value="other" selected>Other</option>
+  </select>
   <label>How often</label>
   <select id="bFreq">
     <option value="w">Weekly</option><option value="f" selected>Fortnightly</option>
@@ -301,6 +319,22 @@ a{color:var(--amber)}
   <button class="btn ghost" onclick="pendingRows=null;closeModal('impModal')">Cancel</button>
 </div></div>
 
+<!-- Debt sheet -->
+<div class="modal" id="debtModal"><div class="sheet">
+  <h3 id="debtSheetTitle">Track a debt</h3>
+  <div class="sub">Enter what you owe today. Repayments leaving your accounts bring it down automatically; new advances landing push it back up. Re-enter the balance any time to correct it.</div>
+  <label>Name</label><input id="dName" placeholder="e.g. Credit Corp">
+  <label>Balance owing right now ($)</label><input id="dBal" type="number" inputmode="decimal" step="0.01">
+  <label>Match transactions containing</label><input id="dMatch" placeholder="e.g. credit corp">
+  <input type="hidden" id="dEditId">
+  <div style="height:18px"></div>
+  <button class="btn" onclick="saveDebt()">Save debt</button>
+  <div style="height:8px"></div>
+  <button class="btn ghost" onclick="closeModal('debtModal')">Cancel</button>
+  <div style="height:8px"></div>
+  <button class="btn danger" id="dDelete" style="display:none" onclick="deleteDebt()">Stop tracking this debt</button>
+</div></div>
+
 <!-- Goal sheet -->
 <div class="modal" id="goalModal"><div class="sheet">
   <h3 id="goalSheetTitle">Add a savings goal</h3>
@@ -323,7 +357,7 @@ a{color:var(--amber)}
 /* ============================== state ============================== */
 var LS = {
   cfg:'ub_cfg', txns:'ub_txns', accts:'ub_accts', bills:'ub_bills',
-  dismissed:'ub_dismissed', goals:'ub_goals', last:'ub_last', cb:'ub_cb', ovr:'ub_ovr', imps:'ub_imps'
+  dismissed:'ub_dismissed', goals:'ub_goals', last:'ub_last', cb:'ub_cb', ovr:'ub_ovr', imps:'ub_imps', debts:'ub_debts'
 };
 function load(k,d){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
 function save(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }
@@ -335,6 +369,8 @@ var accts = load(LS.accts,[]);
 var bills = load(LS.bills,[]);     // {id,name,amt(cents),freq,note,src:'manual'|'detected',key}
 var dismissed = load(LS.dismissed,[]); // detected keys the user dismissed
 var goals = load(LS.goals,[]);     // {id,name,target(cents),saverId,current(cents)}
+var debts = load(LS.debts,[]);     // {id,name,bal0(cents at entry),entry:'YYYY-MM-DD',match,peak(cents)}
+bills.forEach(function(b){ if(!b.cat) b.cat='other'; });
 var lastSync = load(LS.last,null);
 var cbtx = load(LS.cb,[]);         // bank CSV imports {t,d,a,c,ac:<account slug>,x,b:1,im:<import id>}
 var imports = load(LS.imps,[]);    // {id,label,ac,up(loaded ISO),first,last,n}
@@ -764,15 +800,25 @@ function renderBills(){
 
   var host=document.getElementById('billList');
   host.innerHTML=bills.length?'':'<div class="empty">Nothing yet. Sync your Up data and I\'ll detect recurring payments, or add bills manually.</div>';
-  bills.slice().sort(function(a,b){return perFortnight(b.amt,b.freq)-perFortnight(a.amt,a.freq);})
-    .forEach(function(b){
+  var CATN={debt:'Debt repayments',sub:'Subscriptions',ins:'Insurance',util:'Utilities & phone',living:'Living & family',other:'Other'};
+  ['debt','sub','ins','util','living','other'].forEach(function(cat){
+    var grp=bills.filter(function(b){return (b.cat||'other')===cat;});
+    if(!grp.length) return;
+    var sub=grp.reduce(function(s,b){return s+perFortnight(b.amt,b.freq);},0);
     host.insertAdjacentHTML('beforeend',
-      '<div class="list-item" onclick="openBillSheet(\''+b.id+'\')">'+
-      '<div class="li-main"><div class="li-name">'+esc(b.name)+'</div>'+
-      '<div class="li-sub">'+FREQ[b.freq].n+(b.note?' · '+esc(b.note):'')+
-      (b.src==='detected'?' · from Up history':'')+'</div></div>'+
-      '<div class="li-amt">'+money(b.amt)+'<small>'+money(perFortnight(b.amt,b.freq))+' / fn</small></div></div>');
+      '<div class="row" style="margin-top:14px"><div class="day-hd" style="margin:0">'+CATN[cat]+
+      '</div><div class="sub">'+money(sub)+' / fn</div></div>');
+    grp.sort(function(a,b){return perFortnight(b.amt,b.freq)-perFortnight(a.amt,a.freq);})
+      .forEach(function(b){
+      host.insertAdjacentHTML('beforeend',
+        '<div class="list-item" onclick="openBillSheet(\''+b.id+'\')">'+
+        '<div class="li-main"><div class="li-name">'+esc(b.name)+'</div>'+
+        '<div class="li-sub">'+FREQ[b.freq].n+(b.note?' · '+esc(b.note):'')+
+        (b.src==='detected'?' · from Up history':'')+'</div></div>'+
+        '<div class="li-amt">'+money(b.amt)+'<small>'+money(perFortnight(b.amt,b.freq))+' / fn</small></div></div>');
+    });
   });
+  renderDebts();
 
   var det=detectRecurring(ALL), keys=billKeys(), dset={};
   dismissed.forEach(function(k){dset[k]=1;});
@@ -796,6 +842,66 @@ function confirmDetected(i){ var d=window._det[i]; if(!d)return;
 function dismissDetected(i){ var d=window._det[i]; if(!d)return;
   dismissed.push(d.key); save(LS.dismissed,dismissed); renderBills(); }
 
+/* ---- debts ---- */
+function debtRemaining(d){
+  var m=d.match.toLowerCase(), rem=d.bal0;
+  // walk oldest -> newest so the running balance is chronological
+  for(var i=ALL.length-1;i>=0;i--){ var t=ALL[i];
+    if(t.x||t.t<=d.entry) continue;
+    if(t.d.toLowerCase().indexOf(m)<0) continue;
+    rem += (t.a<0 ? t.a : t.a); // repayment (neg) reduces, new advance (pos) increases
+  }
+  return Math.max(0,rem);
+}
+function renderDebts(){
+  var host=document.getElementById('debtList'); if(!host) return;
+  host.innerHTML=debts.length?'':'<div class="empty">Nothing tracked yet.</div>';
+  var tot=0;
+  debts.forEach(function(d){
+    var rem=debtRemaining(d);
+    tot+=rem;
+    var peak=Math.max(d.peak||0,d.bal0,rem);
+    if(peak!==d.peak){ d.peak=peak; save(LS.debts,debts); }
+    var paid=peak-rem, pc=peak?Math.round(paid/peak*100):100;
+    host.insertAdjacentHTML('beforeend',
+      '<div style="margin-top:14px" onclick="openDebtSheet(\''+d.id+'\')">'+
+      '<div class="row"><div class="li-name">'+esc(d.name)+'</div>'+
+      '<div class="li-amt '+(rem?'':'pos')+'">'+(rem?money(rem)+' left':'PAID OFF')+'</div></div>'+
+      '<div class="bar" style="height:10px"><b style="width:'+pc+'%" class="'+(rem?'warn':'')+'"></b></div>'+
+      '<div class="row" style="margin-top:4px"><div class="sub">'+pc+'% cleared</div>'+
+      '<div class="sub">'+money(paid)+' paid down since '+fmtDay(d.entry)+'</div></div></div>');
+  });
+  document.getElementById('debtTotal').textContent=debts.length?money(tot)+' owing':'';
+}
+function openDebtSheet(id){
+  var d=id?debts.find(function(x){return x.id===id;}):null;
+  document.getElementById('debtSheetTitle').textContent=d?'Edit debt':'Track a debt';
+  document.getElementById('dName').value=d?d.name:'';
+  document.getElementById('dBal').value=d?(debtRemaining(d)/100).toFixed(2):'';
+  document.getElementById('dMatch').value=d?d.match:'';
+  document.getElementById('dEditId').value=d?d.id:'';
+  document.getElementById('dDelete').style.display=d?'block':'none';
+  document.getElementById('debtModal').classList.add('on');
+}
+function saveDebt(){
+  var name=document.getElementById('dName').value.trim();
+  var bal=Math.round(parseFloat(document.getElementById('dBal').value)*100);
+  var match=document.getElementById('dMatch').value.trim()||name;
+  if(!name||isNaN(bal)||bal<0){ toast('Give it a name and today\'s balance'); return; }
+  var id=document.getElementById('dEditId').value;
+  var today=dstr(new Date());
+  if(id){ var d=debts.find(function(x){return x.id===id;});
+    // re-entering the balance IS the manual correction: reset the baseline to today
+    d.name=name; d.match=match; d.bal0=bal; d.entry=today; d.peak=Math.max(d.peak||0,bal); }
+  else debts.push({id:uid(),name:name,match:match,bal0:bal,entry:today,peak:bal});
+  save(LS.debts,debts); closeModal('debtModal'); renderBills();
+}
+function deleteDebt(){
+  var id=document.getElementById('dEditId').value;
+  debts=debts.filter(function(d){return d.id!==id;});
+  save(LS.debts,debts); closeModal('debtModal'); renderBills();
+}
+
 /* ---- bills sheet ---- */
 function openBillSheet(id){
   var b=id?bills.find(function(x){return x.id===id;}):null;
@@ -803,6 +909,7 @@ function openBillSheet(id){
   document.getElementById('bName').value=b?b.name:'';
   document.getElementById('bAmt').value=b?(b.amt/100):'';
   document.getElementById('bFreq').value=b?b.freq:'f';
+  document.getElementById('bCat').value=b?(b.cat||'other'):'other';
   document.getElementById('bNote').value=b?b.note:'';
   document.getElementById('bEditId').value=b?b.id:'';
   document.getElementById('bDelete').style.display=b?'block':'none';
@@ -814,6 +921,7 @@ function saveBill(){
   if(!name||!(amt>0)){ toast('Give it a name and an amount'); return; }
   var id=document.getElementById('bEditId').value;
   var rec={ name:name, amt:amt, freq:document.getElementById('bFreq').value,
+    cat:document.getElementById('bCat').value,
     note:document.getElementById('bNote').value.trim() };
   if(id){ var b=bills.find(function(x){return x.id===id;}); Object.assign(b,rec); }
   else { rec.id=uid(); rec.src='manual'; bills.push(rec); }
