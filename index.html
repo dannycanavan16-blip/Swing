@@ -329,14 +329,14 @@ a{color:var(--amber)}
   <label>Match transactions containing</label><input id="dMatch" placeholder="e.g. credit corp">
   <label>Interest rate (% per year) — leave blank if none</label>
   <input id="dRate" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 47">
-  <div class="day-hd" style="margin-top:18px">Or set up as a loan with a schedule</div>
-  <div class="sub">Fill these in for car loans etc. — the app works out where you're up to from the start date. Leave blank for balance-based tracking above.</div>
+  <div class="day-hd" style="margin-top:18px">Loan details — fill in what you know</div>
+  <div class="sub">Know the full schedule (car loans)? Fill everything in. Only know your repayment? Just add repayment + rate above and the app works out how many payments are left and when you'll be done.</div>
   <label>Original loan amount ($)</label><input id="dOrig" type="number" inputmode="decimal" step="0.01" placeholder="55000">
   <label>First payment date</label><input id="dStart" type="date">
   <label>Repayment amount ($)</label><input id="dPay" type="number" inputmode="decimal" step="0.01" placeholder="650">
   <label>Repayment frequency</label>
   <select id="dPayFreq"><option value="w">Weekly</option><option value="f" selected>Fortnightly</option><option value="m">Monthly</option></select>
-  <label>Total number of payments</label><input id="dN" type="number" inputmode="numeric" placeholder="94">
+  <label>Total number of payments — leave blank to work it out</label><input id="dN" type="number" inputmode="numeric" placeholder="94">
   <input type="hidden" id="dEditId">
   <div style="height:18px"></div>
   <button class="btn" onclick="saveDebt()">Save debt</button>
@@ -890,6 +890,14 @@ function debtCalc(d){
   return { rem:Math.max(0,Math.round(rem)), interest:Math.round(interest) };
 }
 function debtRemaining(d){ return debtCalc(d).rem; }
+function projectPayoff(rem, pay, rate, pfreq){
+  if(!(pay>0)||rem<=0) return null;
+  var f=PFREQ[pfreq||'f'], i=(rate||0)/100/f.py;
+  if(i>0 && pay<=rem*i) return {never:true};
+  var n=i>0 ? Math.ceil(-Math.log(1-rem*i/pay)/Math.log(1+i)) : Math.ceil(rem/pay);
+  var end=new Date(); end.setDate(end.getDate()+Math.round(n*f.days));
+  return {n:n, end:dstr(end)};
+}
 function renderDebts(){
   var host=document.getElementById('debtList'); if(!host) return;
   host.innerHTML=debts.length?'':'<div class="empty">Nothing tracked yet.</div>';
@@ -915,6 +923,11 @@ function renderDebts(){
     paid=peak-rem; pc=peak?Math.round(paid/peak*100):100;
     var fnCost=Math.round(rem*(d.rate||0)/100/365*14);
     var sub2=d.rate&&rem? money(fnCost)+'/fn interest at '+d.rate+'%' : 'since '+fmtDay(d.entry);
+    var proj=(!d.mode&&d.pay)?projectPayoff(rem,d.pay,d.rate,d.pfreq):null;
+    if(proj&&rem){
+      sub2=proj.never?'⚠ repayments don\'t cover the interest'
+        :proj.n+' payments left · done '+fmtDay(proj.end)+(d.rate?' · '+money(fnCost)+'/fn interest':'');
+    }
     host.insertAdjacentHTML('beforeend',
       '<div style="margin-top:14px" onclick="openDebtSheet(\''+d.id+'\')">'+
       '<div class="row"><div class="li-name">'+esc(d.name)+'</div>'+
@@ -953,6 +966,7 @@ function saveDebt(){
   var pay=Math.round((parseFloat(document.getElementById('dPay').value)||0)*100);
   var nPay=parseInt(document.getElementById('dN').value)||0;
   var isLoan=orig>0&&start&&pay>0&&nPay>0;
+  var hasPlan=pay>0&&!isLoan;
   if(!name){ toast('Give it a name'); return; }
   if(!isLoan&&(isNaN(bal)||bal<0)){ toast('Enter today\'s balance, or fill in the loan schedule'); return; }
   if(isLoan){
@@ -967,10 +981,15 @@ function saveDebt(){
   var id=document.getElementById('dEditId').value;
   var today=dstr(new Date());
   var rate=parseFloat(document.getElementById('dRate').value)||0;
+  var plan=hasPlan?{pay:pay,pfreq:document.getElementById('dPayFreq').value}:null;
   if(id){ var d=debts.find(function(x){return x.id===id;});
     // re-entering the balance IS the manual correction: reset the baseline to today
-    d.name=name; d.match=match; d.bal0=bal; d.entry=today; d.rate=rate; d.peak=Math.max(d.peak||0,bal); }
-  else debts.push({id:uid(),name:name,match:match,bal0:bal,entry:today,rate:rate,peak:bal});
+    d.name=name; d.match=match; d.bal0=bal; d.entry=today; d.rate=rate;
+    d.mode=undefined; d.pay=plan?plan.pay:undefined; d.pfreq=plan?plan.pfreq:undefined;
+    d.peak=Math.max(d.peak||0,bal); }
+  else { var nd={id:uid(),name:name,match:match,bal0:bal,entry:today,rate:rate,peak:bal};
+    if(plan){ nd.pay=plan.pay; nd.pfreq=plan.pfreq; }
+    debts.push(nd); }
   save(LS.debts,debts); closeModal('debtModal'); renderBills();
 }
 function deleteDebt(){
