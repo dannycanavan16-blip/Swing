@@ -457,7 +457,9 @@ function money(c,sign){ var neg=c<0; c=Math.abs(c);
 function perFortnight(cents,freq){ return Math.round(cents*FREQ[freq].pf); }
 function dstr(d){ return d.toISOString().slice(0,10); }
 function fmtDay(iso){ var d=new Date(iso+'T12:00:00');
-  return d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'}); }
+  var opts={weekday:'short',day:'numeric',month:'short'};
+  if(d.getFullYear()!==new Date().getFullYear()) opts={day:'numeric',month:'short',year:'numeric'};
+  return d.toLocaleDateString('en-AU',opts); }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function esc(s){ return String(s).replace(/[&<>"']/g,function(m){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];}); }
 function toast(m){ var t=document.getElementById('toast'); t.textContent=m; t.style.display='block';
@@ -927,7 +929,8 @@ function renderDebts(){
     var proj=(!d.mode&&d.pay)?projectPayoff(rem,d.pay,d.rate,d.pfreq):null;
     if(proj&&rem){
       sub2=proj.never?'⚠ repayments don\'t cover the interest'
-        :proj.n+' payments left · done '+fmtDay(proj.end)+(d.rate?' · '+money(fnCost)+'/fn interest':'');
+        :proj.n+' payments left · done '+fmtDay(proj.end)
+         +(d.rate?' · ≈'+money(proj.n*d.pay)+' all-up incl. interest':'');
     }
     host.insertAdjacentHTML('beforeend',
       '<div style="margin-top:14px" onclick="openDebtSheet(\''+d.id+'\')">'+
