@@ -326,6 +326,8 @@ a{color:var(--amber)}
   <label>Name</label><input id="dName" placeholder="e.g. Credit Corp">
   <label>Balance owing right now ($)</label><input id="dBal" type="number" inputmode="decimal" step="0.01">
   <label>Match transactions containing</label><input id="dMatch" placeholder="e.g. credit corp">
+  <label>Interest rate (% per year) — leave blank if none</label>
+  <input id="dRate" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 47">
   <input type="hidden" id="dEditId">
   <div style="height:18px"></div>
   <button class="btn" onclick="saveDebt()">Save debt</button>
@@ -843,33 +845,48 @@ function dismissDetected(i){ var d=window._det[i]; if(!d)return;
   dismissed.push(d.key); save(LS.dismissed,dismissed); renderBills(); }
 
 /* ---- debts ---- */
-function debtRemaining(d){
-  var m=d.match.toLowerCase(), rem=d.bal0;
-  // walk oldest -> newest so the running balance is chronological
+function debtCalc(d){
+  var m=d.match.toLowerCase(), rem=d.bal0, interest=0;
+  var daily=(d.rate||0)/100/365;
+  var cur=d.entry;
+  function accrue(to){
+    if(rem<=0||!daily){ cur=to; return; }
+    var days=Math.round((new Date(to+'T12:00:00')-new Date(cur+'T12:00:00'))/864e5);
+    if(days>0){ var g=rem*(Math.pow(1+daily,days)-1); interest+=g; rem+=g; }
+    cur=to;
+  }
+  // walk oldest -> newest so interest compounds between real events
   for(var i=ALL.length-1;i>=0;i--){ var t=ALL[i];
     if(t.x||t.t<=d.entry) continue;
     if(t.d.toLowerCase().indexOf(m)<0) continue;
-    rem += (t.a<0 ? t.a : t.a); // repayment (neg) reduces, new advance (pos) increases
+    accrue(t.t);
+    rem += t.a; // repayment (neg) reduces, new advance (pos) increases
+    if(rem<0) rem=0;
   }
-  return Math.max(0,rem);
+  accrue(dstr(new Date()));
+  return { rem:Math.max(0,Math.round(rem)), interest:Math.round(interest) };
 }
+function debtRemaining(d){ return debtCalc(d).rem; }
 function renderDebts(){
   var host=document.getElementById('debtList'); if(!host) return;
   host.innerHTML=debts.length?'':'<div class="empty">Nothing tracked yet.</div>';
   var tot=0;
   debts.forEach(function(d){
-    var rem=debtRemaining(d);
+    var calc=debtCalc(d), rem=calc.rem;
     tot+=rem;
     var peak=Math.max(d.peak||0,d.bal0,rem);
     if(peak!==d.peak){ d.peak=peak; save(LS.debts,debts); }
     var paid=peak-rem, pc=peak?Math.round(paid/peak*100):100;
+    var fnCost=Math.round(rem*(d.rate||0)/100/365*14);
+    var sub2=d.rate? money(fnCost)+'/fn in interest at '+d.rate+'%'
+                   : money(paid)+' paid down since '+fmtDay(d.entry);
     host.insertAdjacentHTML('beforeend',
       '<div style="margin-top:14px" onclick="openDebtSheet(\''+d.id+'\')">'+
       '<div class="row"><div class="li-name">'+esc(d.name)+'</div>'+
       '<div class="li-amt '+(rem?'':'pos')+'">'+(rem?money(rem)+' left':'PAID OFF')+'</div></div>'+
       '<div class="bar" style="height:10px"><b style="width:'+pc+'%" class="'+(rem?'warn':'')+'"></b></div>'+
       '<div class="row" style="margin-top:4px"><div class="sub">'+pc+'% cleared</div>'+
-      '<div class="sub">'+money(paid)+' paid down since '+fmtDay(d.entry)+'</div></div></div>');
+      '<div class="sub">'+sub2+'</div></div></div>');
   });
   document.getElementById('debtTotal').textContent=debts.length?money(tot)+' owing':'';
 }
@@ -879,6 +896,7 @@ function openDebtSheet(id){
   document.getElementById('dName').value=d?d.name:'';
   document.getElementById('dBal').value=d?(debtRemaining(d)/100).toFixed(2):'';
   document.getElementById('dMatch').value=d?d.match:'';
+  document.getElementById('dRate').value=d&&d.rate?d.rate:'';
   document.getElementById('dEditId').value=d?d.id:'';
   document.getElementById('dDelete').style.display=d?'block':'none';
   document.getElementById('debtModal').classList.add('on');
@@ -890,10 +908,11 @@ function saveDebt(){
   if(!name||isNaN(bal)||bal<0){ toast('Give it a name and today\'s balance'); return; }
   var id=document.getElementById('dEditId').value;
   var today=dstr(new Date());
+  var rate=parseFloat(document.getElementById('dRate').value)||0;
   if(id){ var d=debts.find(function(x){return x.id===id;});
     // re-entering the balance IS the manual correction: reset the baseline to today
-    d.name=name; d.match=match; d.bal0=bal; d.entry=today; d.peak=Math.max(d.peak||0,bal); }
-  else debts.push({id:uid(),name:name,match:match,bal0:bal,entry:today,peak:bal});
+    d.name=name; d.match=match; d.bal0=bal; d.entry=today; d.rate=rate; d.peak=Math.max(d.peak||0,bal); }
+  else debts.push({id:uid(),name:name,match:match,bal0:bal,entry:today,rate:rate,peak:bal});
   save(LS.debts,debts); closeModal('debtModal'); renderBills();
 }
 function deleteDebt(){
