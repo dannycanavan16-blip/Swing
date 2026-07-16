@@ -331,7 +331,8 @@ a{color:var(--amber)}
   <input id="dRate" type="number" inputmode="decimal" step="0.1" placeholder="e.g. 47">
   <div class="day-hd" style="margin-top:18px">Loan details — fill in what you know</div>
   <div class="sub">Know the full schedule (car loans)? Fill everything in. Only know your repayment? Just add repayment + rate above and the app works out how many payments are left and when you'll be done.</div>
-  <label>Original loan amount ($)</label><input id="dOrig" type="number" inputmode="decimal" step="0.01" placeholder="55000">
+  <label>Original amount borrowed ($) — sets your progress bar even without a full schedule</label>
+  <input id="dOrig" type="number" inputmode="decimal" step="0.01" placeholder="55000">
   <label>First payment date</label><input id="dStart" type="date">
   <label>Repayment amount ($)</label><input id="dPay" type="number" inputmode="decimal" step="0.01" placeholder="650">
   <label>Repayment frequency</label>
@@ -918,7 +919,7 @@ function renderDebts(){
       totPaid+=paid;
       return;
     }
-    var peak=Math.max(d.peak||0,d.bal0,rem);
+    var peak=Math.max(d.peak||0,d.orig||0,d.bal0,rem);
     if(peak!==d.peak){ d.peak=peak; save(LS.debts,debts); }
     paid=peak-rem; pc=peak?Math.round(paid/peak*100):100;
     var fnCost=Math.round(rem*(d.rate||0)/100/365*14);
@@ -986,9 +987,11 @@ function saveDebt(){
     // re-entering the balance IS the manual correction: reset the baseline to today
     d.name=name; d.match=match; d.bal0=bal; d.entry=today; d.rate=rate;
     d.mode=undefined; d.pay=plan?plan.pay:undefined; d.pfreq=plan?plan.pfreq:undefined;
-    d.peak=Math.max(d.peak||0,bal); }
-  else { var nd={id:uid(),name:name,match:match,bal0:bal,entry:today,rate:rate,peak:bal};
+    d.orig=orig>0?orig:undefined;
+    d.peak=Math.max(d.peak||0,bal,orig||0); }
+  else { var nd={id:uid(),name:name,match:match,bal0:bal,entry:today,rate:rate,peak:Math.max(bal,orig||0)};
     if(plan){ nd.pay=plan.pay; nd.pfreq=plan.pfreq; }
+    if(orig>0) nd.orig=orig;
     debts.push(nd); }
   save(LS.debts,debts); closeModal('debtModal'); renderBills();
 }
