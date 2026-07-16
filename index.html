@@ -379,11 +379,13 @@ function rebuildAll(){
   var comb=txns.concat(cbtx);
   comb.forEach(function(t){ delete t._m; });
   var byAmt={};
-  comb.forEach(function(t){ if(!t.x)(byAmt[t.a]=byAmt[t.a]||[]).push(t); });
+  // excluded rows still join the index — a pattern-excluded "Transfer To"
+  // must be able to claim its arriving partner in the other account
+  comb.forEach(function(t){ (byAmt[t.a]=byAmt[t.a]||[]).push(t); });
   comb.forEach(function(c){ if(c.x||c._m) return;
     var cands=byAmt[-c.a]||[];
     for(var i=0;i<cands.length;i++){ var u=cands[i];
-      if(u.x||u._m||u===c) continue;
+      if(u._m||u===c) continue;
       if(String(u.ac)===String(c.ac)) continue; // same account = maybe a refund, leave it
       var dd=Math.abs(new Date(c.t+'T12:00:00')-new Date(u.t+'T12:00:00'))/864e5;
       if(dd<=3){ c.x=true; c._m=1; u.x=true; u._m=1;
